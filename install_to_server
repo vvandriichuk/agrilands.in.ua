@@ -1,0 +1,439 @@
+https://linoxide.com/linux-how-to/deploy-ckan-environment-document-gis-data-plugins
+
+This guide will walk you through the deploy and setup of a CKAN repository using a Ubuntu 16.04 VPS. CKAN is an open source dataset repository used to collect and distribute large data collections from all kinds of sources including census data, spreadsheets, geographical data, government and research data.
+
+Once you have completed this guide you will have a production server running CKAN 2.7 that is ready to import a new dataset, but if you want to get started to CKAN then you must check the official documentation to setup a development environment.
+
+To complete this guide you will need:
+
+A cloud VPS or virtual machine running Ubuntu 16.04 64bits with a Public IP
+A domain name associated to your VPS ( you can use a subdomain as well )
+Some experience working with Python virtual environments and the command line shell
+Some knowledge about Apache, Nginx, and Tomcat
+A sample dataset with structured in CSV or Excel format ( Optional )
+1. Update the System packages
+a. Update the server
+
+ssh root@$REMOTE_SERVER
+
+apt update && apt upgrade
+b. Create a backup script
+
+cat > /usr/bin/backme.sh
+#! /bin/bash  -e
+
+backme () {
+  TIMESTAMP=$( date +'%s')
+  for SOURCE_FILE in $*
+  do
+    cp -av $SOURCE_FILE ${SOURCE_FILE}-${TIMESTAMP}
+  done
+}
+
+backme $*
+
+exit $?
+chmod +x /usr/bin/backme.sh
+c. Update the server hostname configuration, you will need to replace "x.x.x.x" with your server IP address, also replace yourdomain.com with the domain assigned to your server.
+
+backme.sh /etc/hosts /etc/hostname
+
+echo "ckanproduction.yourdomain.com" > /etc/hostname
+
+echo -e "\nx.x.x.x ckanproduction.yourdomain.com ckanproduction" >> /etc/hosts
+
+sudo hostname ckanproduction.yourdomain.com
+
+exit
+
+ssh root@$REMOTE_SERVER
+d. Setup a user account to deploy CKAN
+
+adduser ckanadmin  
+
+# USE THE INTERACTIVE PROGRAM TO SETUP A NEW USER AND PASSWORD TO MANAGE CKAN
+
+echo -e "\nckanadmin ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers
+Also, you may use "visudo" to setup the user permissions.
+
+su - ckanadmin
+
+mkdir .ssh 
+
+cat > .ssh/authorized_keys
+# INSERT A PUBLIC KEY TO ACCESS YOUR SERVER AS THE USER ckanadmin
+chmod 700 .ssh
+
+exit
+
+ssh ckanadmin@$REMOTE_SERVER
+e. Install the software package dependencies for CKAN
+
+cat > packagelist
+apache2
+build-essential
+git
+git-core
+jq
+libapache2-mod-rpaf
+libapache2-mod-wsgi
+libffi-dev
+libgeos-c1
+libgeos-dev
+libjts-java
+libpq5
+libpq-dev
+libtomcat6-java
+libxml2-dev
+libxslt1-dev
+links
+openjdk-7-jdk
+postgresql
+postgresql-9.3-postgis-2.1
+python-dev
+python-jinja2
+python-pastescript
+python-pip
+python-virtualenv
+python-werkzeug
+redis-server
+solr-tomcat
+tomcat6
+tomcat6-common
+unzip
+virtualenvwrapper
+zlib1g-dev
+postfix
+unzip
+unrar
+p7zip-full
+python-gdal
+sudo apt install -y $( cat packagelist )
+
+sudo service apache2 stop
+
+sudo apt install nginx -y
+
+sudo service nginx stop
+2. Download and Install the CKAN package for production
+We have to download the respective file from ckan packaging website using wget command.
+
+wget http://packaging.ckan.org/python-ckan_2.7-trusty_amd64.deb
+
+sudo dpkg -i python-ckan_2.7-trusty_amd64.deb
+3. Setup a PostgreSQL database
+a. Check that PostgreSQL was installed correctly, Check that the encoding of databases is UTF8
+
+sudo -u postgres psql -l
+b. Next you’ll need to create a database user ( Please use a different password )
+
+sudo -u postgres createuser -S -D -R -P ckan_default    
+
+password: f!+hRnztXgDtKSLW9kY
+c. Create a new PostgreSQL database,
+
+sudo -u postgres createdb -O ckan_default ckan_default -E utf-8
+
+database: ckan_default  
+5. Setup Solr
+a. Edit the Tomcat configuration file
+
+sudo backme.sh  /etc/tomcat6/server.xml
+
+sudo sed -r -i "/Connector port=\"8080\"/ s/$/address=\"127.0.0.1\"/" /etc/tomcat6/server.xml
+
+sudo sed -r -i "/port=.8080./ s/8080/8983/g" /etc/tomcat6/server.xml
+
+diff /etc/tomcat6/server.xml /etc/tomcat6/server.xml.last   
+
+sudo service tomcat6 restart
+b. Replace the default schema.xml file with a symlink to the CKAN schema
+
+sudo mv -v /etc/solr/conf/schema.xml /etc/solr/conf/schema.xml.orig.back
+
+sudo ln -s /usr/lib/ckan/default/src/ckan/ckan/config/solr/schema.xml /etc/solr/conf/schema.xml
+
+sudo service tomcat6 restart
+c. Change the solr_url setting in your CKAN configuration file
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/solr_url/ s/^#//" /etc/ckan/default/production.ini
+
+diff /etc/ckan/default/production.ini /etc/ckan/default/production.ini.last
+
+sudo ln -s /usr/bin/rotatelogs /usr/sbin/rotatelogs
+
+sudo service tomcat6 restart
+
+sudo service apache2 restart
+
+links http://localhost:8983/solr/
+
+ssh -L 8983:localhost:8983 ckanadmin@ckanproduction.yourdomain.com
+
+use a web browser to check http://localhost:8983/solr/
+6. Update the configuration and initialize the database
+d. Setup ckan.site_id
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -i "/ckan.site_id/ s/default/tenosolution/" /etc/ckan/default/production.ini
+
+diff /etc/ckan/default/production.ini /etc/ckan/default/production.ini.last
+e. Setup ckan.site_url
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.site_url/ s/\$/ http\:\/\/ckanproduction.yourdomain.com/" /etc/ckan/default/production.ini  
+
+diff /etc/ckan/default/production.ini /etc/ckan/default/production.ini.last
+c. Edit the sqlalchemy.url setting ( sqlalchemy.url = postgresql://ckan_default:pass@localhost/ckan_default )
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -i "/sqlalchemy/ s/pass/f!+hRnztXgDtKSLW9kY/"  /etc/ckan/default/production.ini
+
+diff /etc/ckan/default/production.ini /etc/ckan/default/production.ini.last
+c. Initialize your CKAN database
+
+sudo ckan db init
+d. Restart the web servers
+
+sudo service apache2 restart
+
+sudo service nginx restart    
+7. Setting up Admin Account and Test Data
+a. Initialize the virt environment
+
+. /usr/lib/ckan/default/bin/activate
+
+cd /usr/lib/ckan/default/src/ckan
+b. Creating a sysadmin user ( Please setup a different password )
+
+paster sysadmin add mycompanyadmin -c /etc/ckan/default/production.ini
+
+password: mycompanyadmin
+c. Creating test data
+
+paster create-test-data -c /etc/ckan/default/production.ini
+
+d. Setup CKAN ownership to install extensions later...
+
+cd /usr/lib/ckan
+
+sudo chown -R ckanadmin: default/
+8. Setup ckanext-spatial
+a. Install PostGIS:
+
+cd /usr/lib/ckan/default/src/ckan
+
+sudo apt-get install postgresql-9.3-postgis-2.1 python-dev libxml2-dev libxslt1-dev libgeos-c1
+b. create the necessary tables and functions in the database
+
+sudo -u postgres psql -d ckan_default -f /usr/share/postgresql/9.3/contrib/postgis-2.1/postgis.sql
+
+sudo -u postgres psql -d ckan_default -f /usr/share/postgresql/9.3/contrib/postgis-2.1/spatial_ref_sys.sql
+c. Change the owner of spatial tables to the CKAN user
+
+sudo -u postgres psql -d ckan_default -c 'ALTER VIEW geometry_columns OWNER TO ckan_default;'
+
+sudo -u postgres psql -d ckan_default -c 'ALTER TABLE spatial_ref_sys OWNER TO ckan_default;'
+d. see if PostGIS was properly installed:
+
+sudo -u postgres psql -d ckan_default -c "SELECT postgis_full_version()"
+e. Install the extension
+
+cd /usr/lib/ckan/default/src
+
+git clone https://github.com/okfn/ckanext-spatial.git
+
+cd ckanext-spatial
+
+pip install -r pip-requirements.txt
+
+python setup.py develop
+f. Configure the extension:
+
+cd /usr/lib/ckan/default/src/ckanext-spatial
+
+paster --plugin=ckanext-spatial spatial initdb 4326 -c /etc/ckan/default/production.ini
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ spatial_metadata spatial_query/" /etc/ckan/default/production.ini
+
+diff /etc/ckan/default/production.ini /etc/ckan/default/production.ini.last
+
+deactivate
+9. Configure the FileStore
+d. Create the file store directory
+
+sudo mkdir -p /var/lib/ckan/default
+
+sudo chown -R www-data: /var/lib/ckan/default
+
+sudo chmod -u+rwx /var/lib/ckan/default
+e. Enable FileStore and file uploads
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -i "/ckan.storage_path/ s/^#//" /etc/ckan/default/production.ini
+
+diff /etc/ckan/default/production.ini /etc/ckan/default/production.ini.last
+
+sudo chown -R www-data: /var/lib/ckan
+10. Install extensions
+a. Initialize the virt environment
+
+. /usr/lib/ckan/default/bin/activate
+a. Install ckanext-spatialUI ( http://extensions.ckan.org/extension/spatialui/ )
+
+cd /usr/lib/ckan/default/src
+
+git clone https://github.com/XVTSolutions/ckanext-spatialUI
+
+cd ckanext-spatialUI
+
+python setup.py develop
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ spatialUI/" /etc/ckan/default/production.ini 
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last
+b. Install ckanext-pdfview ( http://extensions.ckan.org/extension/pdfview/ )
+
+cd /usr/lib/ckan/default/src
+
+git clone https://github.com/ckan/ckanext-pdfview.git
+
+cd ckanext-pdfview
+
+python setup.py develop
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ resource_proxy pdf_view/" /etc/ckan/default/production.ini  
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last
+c. Install ckanext-officedocs ( http://extensions.ckan.org/extension/officedocs/ )
+
+cd /usr/lib/ckan/default/src
+
+git clone https://github.com/jqnatividad/ckanext-officedocs.git
+
+cd ckanext-officedocs
+
+python setup.py install
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ officedocs_view/" /etc/ckan/default/production.ini 
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last
+d. Install ckanext-dictionary ( http://extensions.ckan.org/extension/dictionary/ )
+
+cd /usr/lib/ckan/default/src
+
+git clone https://github.com/cmuphillycapstone/ckanext-dictionary.git
+
+cd ckanext-dictionary
+
+python setup.py develop
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ dictionary/" /etc/ckan/default/production.ini 
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last
+g. Install ckanext-geoview ( https://github.com/ckan/ckanext-geoview )
+
+cd /usr/lib/ckan/default/src
+
+git clone https://github.com/ckan/ckanext-geoview.git
+
+cd ckanext-geoview
+
+python setup.py develop
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ geo_view geojson_view wmts_view/" /etc/ckan/default/production.ini 
+
+sudo sed -r -i "/ckan.views.default_views =/ s/$/\ geo_view geojson_view wmts_view/" /etc/ckan/default/production.ini 
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last
+h. Install ckanext-geopusher ( https://github.com/datacats/ckanext-geopusher )
+
+cd /usr/lib/ckan/default/src
+
+git clone https://github.com/datacats/ckanext-geopusher.git
+
+cd ckanext-geopusher
+
+backme.sh requirements.txt
+
+sed -r -i "/celery/ s/$/==3.1.25/" requirements.txt
+
+pip install -r requirements.txt
+
+python setup.py develop
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ geopusher/" /etc/ckan/default/production.ini 
+
+sudo sed -i "100ickanext.geoview.ol_viewer.formats = wms kml geojson wfs" /etc/ckan/default/production.ini
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last
+
+sudo service apache2 reload
+
+deactivate
+11. Setting up the DataStore ( run this in a new terminal )
+. /usr/lib/ckan/default/bin/activate
+a. Enable the datastore plugin
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ datastore/" /etc/ckan/default/production.ini
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last
+b. Set-up the database, Create a database_user called datastore_default. ( Please use a different password )
+
+sudo -u postgres psql -l
+
+sudo -u postgres createuser -S -D -R -P -l datastore_default
+
+password: 7DN4ta2igWVlFj
+
+sudo -u postgres createdb -O ckan_default datastore_default -E utf-8
+c. Setup your CKAN config
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i -e "/ckan.datastore.write_url/ s/^#//" -e "/ckan.datastore.write_url/ s/ckan_default\:pass/ckan_default:f!+hRnztXgDtKSLW9kY/" /etc/ckan/default/production.ini
+
+sudo sed -r -i -e "/ckan.datastore.read_url/ s/^#//" -e "/ckan.datastore.read_url/ s/datastore_default\:pass/datastore_default:7DN4ta2igWVlFj/" /etc/ckan/default/production.ini
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last
+d. Set permissions, use this command for a source code installation
+
+sudo ckan datastore set-permissions | sudo -u postgres psql --set ON_ERROR_STOP=1
+e. Setup datapusher
+
+sudo backme.sh /etc/ckan/default/production.ini
+
+sudo sed -r -i "/ckan.plugins =/ s/$/\ datapusher/" /etc/ckan/default/production.ini 
+
+sudo sed -r -i "/datapusher/ s/^#ckan/ckan/" /etc/ckan/default/production.ini
+
+diff  /etc/ckan/default/production.ini  /etc/ckan/default/production.ini.last  
+12. Restart the web services
+sudo -i
+
+service tomcat6 restart; service apache2 restart;  service nginx restart
+You should be able to access you CKAN repository at http://ckanproduction.yourdomain.com and login with the admin user previously created.
+
+Please refer to ckan docs for further details about how to manage and setup your new site.
